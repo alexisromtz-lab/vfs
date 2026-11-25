@@ -21,9 +21,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -66,6 +68,27 @@ type leafrow struct {
 	Reps     int     `json:"reps"`
 }
 
+// pctrow is the lookup distribution of the two structures sampled in the same
+// window. A percentile from interleaved single-call samples is not the same
+// measurement as a mean over a loop: the host's noise lands in both arms of each
+// pair, so the ratio survives conditions that make an absolute ns/op worthless.
+type pctrow struct {
+	MaxLeaf     int     `json:"max_leaf"`
+	Leaves      int     `json:"leaves"`
+	Samples     int     `json:"samples"`
+	SliceP50    float64 `json:"slice_p50_ns"`
+	SliceP90    float64 `json:"slice_p90_ns"`
+	SliceP99    float64 `json:"slice_p99_ns"`
+	RaskP50     float64 `json:"rask_p50_ns"`
+	RaskP90     float64 `json:"rask_p90_ns"`
+	RaskP99     float64 `json:"rask_p99_ns"`
+	RatioP50    float64 `json:"ratio_p50"`
+	RatioP90    float64 `json:"ratio_p90"`
+	RatioP99    float64 `json:"ratio_p99"`
+	RatioP99Net float64 `json:"ratio_p99_net"`
+	OverheadNs  float64 `json:"clock_overhead_ns"`
+}
+
 type report struct {
 	Benchmark   string    `json:"benchmark"`
 	HIP         string    `json:"hip"`
@@ -80,6 +103,7 @@ type report struct {
 	Results     []row     `json:"results"`
 	LargeSpan   []h3row   `json:"h3_base_sweep"`
 	LeafSize    []leafrow `json:"leaf_size_sweep"`
+	Percentiles []pctrow  `json:"lookup_percentiles"`
 }
 
 func main() {
@@ -87,6 +111,7 @@ func main() {
 	asJSON := flag.Bool("json", false, "emit the JSON report on stdout")
 	reps := flag.Int("reps", 3, "timing repetitions; the minimum is reported")
 	noTiming := flag.Bool("no-timing", false, "skip the timing sweeps (deterministic only)")
+	samples := flag.Int("samples", 20000, "single-call samples per arm in the percentile sweep")
 	flag.Parse()
 
 	rep := report{
@@ -99,7 +124,7 @@ func main() {
 		Arch:        runtime.GOARCH,
 		NumCPU:      runtime.NumCPU(),
 		LoadAverage: loadAverage(),
-		Note:        "Memory is deterministic (TotalAlloc over an n=0 control). Timings are the minimum of -reps runs; no difference under 2x is claimed.",
+		Note:        "Memory is deterministic (TotalAlloc over an n=0 control). Percentiles are single-call samples interleaved against the baseline; the absolute ns are not a measurement on a shared host, the ratios are. leaf_size_sweep is the mean-over-a-loop estimator, kept as evidence of what this host does to it.",
 	}
 
 	for _, shape := range []string{"contiguous", "clustered", "uniform"} {
@@ -167,6 +192,21 @@ func main() {
 		}
 	}
 
+	// The Acceptance Test names lookup p99, and a mean over a loop cannot answer
+	// it. Sample one call at a time, alternating which arm goes first so a slow
+	// scheduler tick cannot be charged to the same side twice, and report the
+	// ratio of like percentiles: the host's noise is common to both arms of a
+	// pair and cancels in the ratio, which is what H2 asks about.
+	if !*noTiming {
+		es := rask.Extents(100000, "clustered", rand.New(rand.NewPCG(100000, 42)))
+		q := rask.Probes(es, 4096, rand.New(rand.NewPCG(100000, 43)))
+		sl := rask.BuildSlice(es)
+		for _, maxLeaf := range []int{16, 32, 64, 128, 256, 1024} {
+			x := rask.BuildIndex(es, maxLeaf)
+			rep.Percentiles = append(rep.Percentiles, sampleLookups(sl, x, q, *samples, maxLeaf))
+		}
+	}
+
 	if *asJSON || *out != "" {
 		b, err := json.MarshalIndent(rep, "", "  ")
 		if err != nil {
@@ -190,6 +230,110 @@ func main() {
 	printTable(&rep, *reps)
 }
 
+// sampleLookups times one lookup per structure per step and returns the
+// percentiles of both arms. The order alternates, so neither structure is
+// systematically the one that pays for a scheduler tick.
+func sampleLookups(sl *rask.Slice, x *rask.Index, q []uint64, n, maxLeaf int) pctrow {
+	sSlice := make([]float64, 0, n)
+	sRask := make([]float64, 0, n)
+	overhead := clockOverhead()
+
+	for i := 0; i < n; i++ {
+		off := q[i%len(q)]
+		// Both arms are timed inside one iteration, and which goes first
+		// alternates: a scheduler tick hits one arm per pair, not one structure.
+		var tr, ts float64
+		if i&1 == 0 {
+			tr, ts = timeIndex(x, off), timeSlice(sl, off)
+		} else {
+			ts, tr = timeSlice(sl, off), timeIndex(x, off)
+		}
+		sRask = append(sRask, tr)
+		sSlice = append(sSlice, ts)
+	}
+
+	row := pctrow{
+		MaxLeaf: maxLeaf, Leaves: x.Leaves(), Samples: n, OverheadNs: overhead,
+		SliceP50: percentile(sSlice, 50), SliceP90: percentile(sSlice, 90), SliceP99: percentile(sSlice, 99),
+		RaskP50: percentile(sRask, 50), RaskP90: percentile(sRask, 90), RaskP99: percentile(sRask, 99),
+	}
+	row.RatioP50 = row.RaskP50 / row.SliceP50
+	row.RatioP90 = row.RaskP90 / row.SliceP90
+	row.RatioP99 = row.RaskP99 / row.SliceP99
+	// Every sample carries two time.Now() calls, and that cost is the same
+	// constant in both arms, so it pulls the ratio toward 1. Subtracting it is
+	// the only way to read the threshold without flattering it.
+	row.RatioP99Net = net(row.RaskP99, row.SliceP99, overhead)
+	return row
+}
+
+// timeIndex and timeSlice time one lookup of each arm, in nanoseconds. Both read
+// the same offset, so an iteration compares two answers to the same question.
+func timeIndex(x *rask.Index, off uint64) float64 {
+	t0 := time.Now()
+	e, ok := x.Lookup(off)
+	t1 := time.Now()
+	sink, _ = e, ok
+	return float64(t1.Sub(t0).Nanoseconds())
+}
+
+func timeSlice(sl *rask.Slice, off uint64) float64 {
+	t0 := time.Now()
+	e, ok := sl.Lookup(off)
+	t1 := time.Now()
+	sink, _ = e, ok
+	return float64(t1.Sub(t0).Nanoseconds())
+}
+
+// net removes the shared constant from both arms of a ratio. It is a floor, not
+// a correction with an error bar: the overhead is measured, not modelled.
+func net(a, b, overhead float64) float64 {
+	if a-overhead < 1 {
+		a = overhead + 1
+	}
+	if b-overhead < 1 {
+		b = overhead + 1
+	}
+	return (a - overhead) / (b - overhead)
+}
+
+// clockOverhead measures what two time.Now() calls cost here, because that cost
+// is inside every sample and sets the floor below which no difference is real.
+func clockOverhead() float64 {
+	const rounds = 10000
+	var best = math.MaxFloat64
+	for r := 0; r < 5; r++ {
+		t0 := time.Now()
+		for i := 0; i < rounds; i++ {
+			t1 := time.Now()
+			_ = t1
+		}
+		d := float64(time.Since(t0).Nanoseconds()) / rounds
+		if d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+// percentile returns the p-th percentile by nearest rank, on a copy: the sample
+// order is the probe order and sorting it in place would spoil the next arm.
+func percentile(v []float64, p int) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	c := append([]float64(nil), v...)
+	slices.Sort(c)
+	rank := (p*len(c) + 99) / 100
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > len(c) {
+		rank = len(c)
+	}
+	return c[rank-1]
+}
+
 func printTable(rep *report, reps int) {
 	fmt.Printf("RASK compact sparse-range index (HIP-1344, hanzoai/vfs#59)\n")
 	fmt.Printf("%s %s/%s, %d cpus, load %s\n\n", rep.GoVersion, rep.OS, rep.Arch, rep.NumCPU, rep.LoadAverage)
@@ -209,6 +353,17 @@ func printTable(rep *report, reps int) {
 		for _, l := range rep.LeafSize {
 			fmt.Printf("  maxLeaf=%-5d leaves=%-6d %8.0f ns (worst %8.0f)\n", l.MaxLeaf, l.Leaves, l.NsPerOp, l.SpreadNs)
 		}
+	}
+	if len(rep.Percentiles) > 0 {
+		fmt.Printf("\nLookup percentiles, interleaved (100,000 clustered extents, one call per sample):\n")
+		fmt.Printf("| max leaf | leaves | slice p50 | slice p90 | slice p99 | rask p50 | rask p90 | rask p99 | p50 ratio | p99 ratio | p99 net |\n")
+		fmt.Printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+		for _, r := range rep.Percentiles {
+			fmt.Printf("| %d | %d | %.0f | %.0f | %.0f | %.0f | %.0f | %.0f | **%.2f** | **%.2f** | **%.2f** |\n",
+				r.MaxLeaf, r.Leaves, r.SliceP50, r.SliceP90, r.SliceP99, r.RaskP50, r.RaskP90, r.RaskP99,
+				r.RatioP50, r.RatioP99, r.RatioP99Net)
+		}
+		fmt.Printf("  clock overhead %.0f ns per sample, present in both arms\n", rep.Percentiles[0].OverheadNs)
 	}
 }
 

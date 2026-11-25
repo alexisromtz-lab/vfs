@@ -2,13 +2,13 @@
   "benchmark": "hanzoai/vfs RASK compact sparse-range index",
   "hip": "HIP-1344",
   "issue": "hanzoai/vfs#59",
-  "timestamp_utc": "2026-11-25T21:11:33Z",
+  "timestamp_utc": "2026-11-25T21:49:50Z",
   "go_version": "go1.27.4",
   "os": "darwin",
   "arch": "arm64",
   "num_cpu": 8,
   "load_average": "unavailable on darwin",
-  "note": "Memory is deterministic (TotalAlloc over an n=0 control). Timings are the minimum of -reps runs; no difference under 2x is claimed.",
+  "note": "Memory is deterministic (TotalAlloc over an n=0 control). Percentiles are single-call samples interleaved against the baseline; the absolute ns are not a measurement on a shared host, the ratios are. leaf_size_sweep is the mean-over-a-loop estimator, kept as evidence of what this host does to it.",
   "results": [
     {
       "shape": "contiguous",
@@ -23,8 +23,8 @@
       "ratio_rask_over_slice": 0.44921875,
       "payload_per_extent": 4.004,
       "alloc_bytes_per_extent_slice": 50.416,
-      "alloc_bytes_per_extent_rask": 83.888,
-      "alloc_ratio_rask_over_slice": 1.6639162170739448
+      "alloc_bytes_per_extent_rask": 78.568,
+      "alloc_ratio_rask_over_slice": 1.5583941605839415
     },
     {
       "shape": "contiguous",
@@ -87,8 +87,8 @@
       "ratio_rask_over_slice": 0.54326171875,
       "payload_per_extent": 4.05777,
       "alloc_bytes_per_extent_slice": 89.42832,
-      "alloc_bytes_per_extent_rask": 85.46344,
-      "alloc_ratio_rask_over_slice": 0.9556641564998649
+      "alloc_bytes_per_extent_rask": 85.46328,
+      "alloc_ratio_rask_over_slice": 0.9556623673574546
     },
     {
       "shape": "contiguous",
@@ -103,8 +103,8 @@
       "ratio_rask_over_slice": 0.3350670855978261,
       "payload_per_extent": 3.93507,
       "alloc_bytes_per_extent_slice": 89.42832,
-      "alloc_bytes_per_extent_rask": 66.23464,
-      "alloc_ratio_rask_over_slice": 0.740645021621786
+      "alloc_bytes_per_extent_rask": 66.23256,
+      "alloc_ratio_rask_over_slice": 0.7406217627704512
     },
     {
       "shape": "clustered",
@@ -183,8 +183,8 @@
       "ratio_rask_over_slice": 0.6090565557065217,
       "payload_per_extent": 4.18563,
       "alloc_bytes_per_extent_slice": 89.42832,
-      "alloc_bytes_per_extent_rask": 92.53128,
-      "alloc_ratio_rask_over_slice": 1.0346977333354803
+      "alloc_bytes_per_extent_rask": 92.53032,
+      "alloc_ratio_rask_over_slice": 1.034686998481018
     },
     {
       "shape": "clustered",
@@ -199,8 +199,8 @@
       "ratio_rask_over_slice": 0.5090480638586956,
       "payload_per_extent": 4.1233,
       "alloc_bytes_per_extent_slice": 89.42832,
-      "alloc_bytes_per_extent_rask": 87.862,
-      "alloc_ratio_rask_over_slice": 0.9824851903736982
+      "alloc_bytes_per_extent_rask": 87.86184,
+      "alloc_ratio_rask_over_slice": 0.9824834012312879
     },
     {
       "shape": "uniform",
@@ -279,8 +279,8 @@
       "ratio_rask_over_slice": 0.6224736752717391,
       "payload_per_extent": 7.17813,
       "alloc_bytes_per_extent_slice": 89.42832,
-      "alloc_bytes_per_extent_rask": 92.03992,
-      "alloc_ratio_rask_over_slice": 1.0292032769932389
+      "alloc_bytes_per_extent_rask": 92.04104,
+      "alloc_ratio_rask_over_slice": 1.0292158009901113
     },
     {
       "shape": "uniform",
@@ -323,44 +323,142 @@
     {
       "max_leaf": 16,
       "leaves": 12499,
-      "lookup_ns_min": 371,
-      "lookup_ns_max": 1018,
+      "lookup_ns_min": 166,
+      "lookup_ns_max": 193,
       "reps": 3
     },
     {
       "max_leaf": 32,
       "leaves": 6249,
-      "lookup_ns_min": 370,
-      "lookup_ns_max": 556,
+      "lookup_ns_min": 188,
+      "lookup_ns_max": 242,
       "reps": 3
     },
     {
       "max_leaf": 64,
       "leaves": 3124,
-      "lookup_ns_min": 795,
-      "lookup_ns_max": 2615,
+      "lookup_ns_min": 225,
+      "lookup_ns_max": 231,
       "reps": 3
     },
     {
       "max_leaf": 128,
       "leaves": 1562,
-      "lookup_ns_min": 2424,
-      "lookup_ns_max": 4500,
+      "lookup_ns_min": 349,
+      "lookup_ns_max": 423,
       "reps": 3
     },
     {
       "max_leaf": 256,
       "leaves": 781,
-      "lookup_ns_min": 6652,
-      "lookup_ns_max": 9042,
+      "lookup_ns_min": 547,
+      "lookup_ns_max": 666,
       "reps": 3
     },
     {
       "max_leaf": 1024,
       "leaves": 195,
-      "lookup_ns_min": 20531,
-      "lookup_ns_max": 39368,
+      "lookup_ns_min": 2833,
+      "lookup_ns_max": 3239,
       "reps": 3
+    }
+  ],
+  "lookup_percentiles": [
+    {
+      "max_leaf": 16,
+      "leaves": 12499,
+      "samples": 20000,
+      "slice_p50_ns": 208,
+      "slice_p90_ns": 375,
+      "slice_p99_ns": 625,
+      "rask_p50_ns": 333,
+      "rask_p90_ns": 500,
+      "rask_p99_ns": 750,
+      "ratio_p50": 1.6009615384615385,
+      "ratio_p90": 1.3333333333333333,
+      "ratio_p99": 1.2,
+      "ratio_p99_net": 1.2197093719581238,
+      "clock_overhead_ns": 56.0666
+    },
+    {
+      "max_leaf": 32,
+      "leaves": 6249,
+      "samples": 20000,
+      "slice_p50_ns": 208,
+      "slice_p90_ns": 375,
+      "slice_p99_ns": 625,
+      "rask_p50_ns": 292,
+      "rask_p90_ns": 500,
+      "rask_p99_ns": 708,
+      "ratio_p50": 1.4038461538461537,
+      "ratio_p90": 1.3333333333333333,
+      "ratio_p99": 1.1328,
+      "ratio_p99_net": 1.145918030985606,
+      "clock_overhead_ns": 56.1875
+    },
+    {
+      "max_leaf": 64,
+      "leaves": 3124,
+      "samples": 20000,
+      "slice_p50_ns": 208,
+      "slice_p90_ns": 333,
+      "slice_p99_ns": 584,
+      "rask_p50_ns": 334,
+      "rask_p90_ns": 542,
+      "rask_p99_ns": 792,
+      "ratio_p50": 1.6057692307692308,
+      "ratio_p90": 1.6276276276276276,
+      "ratio_p99": 1.356164383561644,
+      "ratio_p99_net": 1.3940730653143898,
+      "clock_overhead_ns": 56.1791
+    },
+    {
+      "max_leaf": 128,
+      "leaves": 1562,
+      "samples": 20000,
+      "slice_p50_ns": 208,
+      "slice_p90_ns": 334,
+      "slice_p99_ns": 542,
+      "rask_p50_ns": 500,
+      "rask_p90_ns": 709,
+      "rask_p99_ns": 959,
+      "ratio_p50": 2.4038461538461537,
+      "ratio_p90": 2.122754491017964,
+      "ratio_p99": 1.7693726937269372,
+      "ratio_p99_net": 1.8594394064303381,
+      "clock_overhead_ns": 56.8
+    },
+    {
+      "max_leaf": 256,
+      "leaves": 781,
+      "samples": 20000,
+      "slice_p50_ns": 208,
+      "slice_p90_ns": 334,
+      "slice_p99_ns": 583,
+      "rask_p50_ns": 750,
+      "rask_p90_ns": 1209,
+      "rask_p99_ns": 1583,
+      "ratio_p50": 3.605769230769231,
+      "ratio_p90": 3.6197604790419162,
+      "ratio_p99": 2.7152658662092626,
+      "ratio_p99_net": 2.899560726581978,
+      "clock_overhead_ns": 56.5625
+    },
+    {
+      "max_leaf": 1024,
+      "leaves": 195,
+      "samples": 20000,
+      "slice_p50_ns": 250,
+      "slice_p90_ns": 458,
+      "slice_p99_ns": 875,
+      "rask_p50_ns": 2417,
+      "rask_p90_ns": 4333,
+      "rask_p99_ns": 5125,
+      "ratio_p50": 9.668,
+      "ratio_p90": 9.460698689956331,
+      "ratio_p99": 5.857142857142857,
+      "ratio_p99_net": 6.195837217476351,
+      "clock_overhead_ns": 57.0375
     }
   ]
 }

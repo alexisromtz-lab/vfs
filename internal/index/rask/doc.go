@@ -10,6 +10,7 @@
 // layout; this is an in-memory index study.
 //
 // The measurement, its hypothesis, its environment and its verdict are in
-// docs/rask-experiment.md. It is a research deliverable: the numbers are what
-// decides it, and a refuted hypothesis is one of the outcomes it reports.
+// docs/research/hip-1344-rask/, and tools/rask-bench reproduces them. It is a
+// research deliverable: the numbers are what decides it, and a refuted
+// hypothesis is one of the outcomes it reports.
 package rask

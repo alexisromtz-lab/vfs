@@ -12,13 +12,13 @@ import (
 // because nothing writes. This test is the boundary of that claim, not a wider
 // one — a concurrent writer is out of scope and would corrupt the log.
 func TestConcurrentReadersAgreeWithModel(t *testing.T) {
-	es := randExtents(rand.New(rand.NewPCG(11, 12)), 4000, pib)
+	es := randExtents(rand.New(rand.NewPCG(11, 12)), 4000, Pib)
 	x := New(32)
 	for _, e := range es {
 		x.Insert(e)
 	}
 	m := model(es)
-	q := probes(es, 8192, rand.New(rand.NewPCG(11, 13)))
+	q := Probes(es, 8192, rand.New(rand.NewPCG(11, 13)))
 
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {

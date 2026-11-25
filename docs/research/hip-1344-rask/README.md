@@ -10,7 +10,7 @@ A research bounty admits a documented negative result. One is reported here.
 
 1. **The encoding wins, and it is not close.** Per extent the payload is **4.12 B against the baseline's 16** (0.26x) on extents written in bursts, and 7.10 B (0.44x) when every offset is random. A run that continues where the last one ended costs one byte of gap plus one or two of length; the sixteen bytes of a `run{a, b uint64}` are a choice, and they are not needed to find a covering range.
 2. **As built, the index is 9.59 B per extent (0.51x), not 4.12.** The 5.47 bytes in between are per-leaf bookkeeping and the capacity an append left unused — not encoding. **H1 (≤40%) is refuted as built** for the pattern this prototype exists for; it holds only where extents never gap (0.34x). The gap is attributed and closable, and closing it is the next step, not this submission.
-3. **On lookup p99, which the Acceptance Test names, the answer is no.** Sampled one call at a time with the baseline and the index interleaved in the same iteration, the p99 ratio is **1.76x to 2.05x at 64 extents per leaf and 6.20x to 9.81x at 512** — over 1.20x in all four runs, so that half of H2 is **refuted**, not noisy. At **32 extents per leaf**, the configuration with the best byte ratio, the band is **1.23-1.41**: over the threshold in all four runs but by only 2.5% at the low end, which is a thin refutation and is reported as thin. At 8-16 extents per leaf it is **1.05-1.27**, which decides nothing, and there the byte win drops to 0.61x. There is no leaf size that satisfies both halves of the claim.
+3. **On lookup p99, which the Acceptance Test names, the answer is no.** Sampled one call at a time with the baseline and the index interleaved in the same iteration, the p99 ratio is **1.76x to 2.05x at 64 extents per leaf and 6.28x to 9.81x at 512** — over 1.20x in all four runs, so that half of H2 is **refuted**, not noisy. At **32 extents per leaf**, the configuration with the best byte ratio, the band is **1.13-1.41**: over the threshold in three runs of four and under it in the fourth, so it is not counted as a refutation. At 8-16 extents per leaf the bands are **1.05-1.27** and **0.88-1.22**, which decide nothing — one run even landed below the baseline — and there the byte win drops to 0.61x. There is no leaf size that satisfies both halves of the claim. The shape question is measured too: on the `uniform` workload the **median** is worse at every leaf size (1.51-13.66) but the p99 tail is within noise of `clustered` below 64 extents per leaf, so the expected "random is worse on the tail" is **not** confirmed.
 4. **H3 holds.** Moving the whole file from offset 0 to 2^50 with every gap unchanged costs **+3.4%** (97,720 → 101,048 B) while the baseline stays flat at 180,224 B. The cost follows the number of extents, not the logical span.
 
 ---
@@ -70,10 +70,10 @@ Full tables in [`score_table.md`](score_table.md); machine-readable source in [`
 | Hypothesis | Prediction | Measured | Verdict |
 |---|---|---|---|
 | **H1** | rask ≤ 0.40x baseline B/ext at 100k clustered | 0.51x built, 0.26x payload | **refuted as built** |
-| **H2** | lookup p99 within 1.20x | 1.76-2.05 at 64 extents/leaf, 6.20-9.81 at 512; 1.23-1.41 at 32; 1.05-1.27 at 8-16 | **refuted at ≥32 extents/leaf, unresolved below** |
+| **H2** | lookup p99 within 1.20x | 1.76-2.05 at 64 extents/leaf, 6.28-9.81 at 512; 1.13-1.41 at 32 (3 of 4 runs); 1.05-1.27 and 0.88-1.22 at 8-16 | **refuted at ≥64 extents/leaf, unresolved below** |
 | **H3** | cost tracks extents, not span | +3.4% across a 2^50 move | **holds** |
 
-Two numbers decide this and they point in opposite directions. **The payload is 4.12 B per extent and the structure is 9.59 B** — 5.47 bytes of bookkeeping per extent stand between the encoding and the claim. And the index is **slower than binary search at every leaf size**, refuted at ≥32 extents per leaf and undecided below. Section 7 says what that means for a merge.
+Two numbers decide this and they point in opposite directions. **The payload is 4.12 B per extent and the structure is 9.59 B** — 5.47 bytes of bookkeeping per extent stand between the encoding and the claim. And the index is **slower than binary search at every leaf size**, refuted at ≥64 extents per leaf and undecided below. Section 7 says what that means for a merge.
 
 ---
 
@@ -91,7 +91,7 @@ Two numbers decide this and they point in opposite directions. **The payload is 
 
 * **Small `n` is a loss, not a tie.** At 1,000 extents written in bursts the prototype allocates **1.66x more** than the baseline: one header plus one log per leaf is a lot of small allocations relative to 31 of them. The live structure still wins (0.45x bytes), but the allocator does not.
 * **`uniform` halves the win.** Random offsets make every gap a six-byte varint: 0.52x instead of 0.34x. Any workload whose extents never continue sees the smaller number.
-* **`uniform` is untested for time.** The timing sweep runs on the clustered shape only. A random offset lands in a leaf whose scan is long and whose bounds are cold, so the real ratio there is expected to be worse than the one reported — **expected** is the word: it is not measured.
+* **`uniform` is measured once, not as a band.** `-shapes clustered,uniform` samples both shapes in one run: the median is worse at every leaf size (1.51-13.66 against 1.25-10.23), but the p99 tail is within noise of `clustered` below 64 extents per leaf and *better* at 64 (1.55 against 1.81). My stated expectation was that random offsets would be worse on the tail; one run does not confirm it, and the honest reading is that the tail is dominated by cache and scheduler effects the access shape does not control. `score_table.md` §4c has the table.
 * **Absolute `ns/op` from this host is not a measurement.** Four runs of the same binary, same seeds, moved the mean `ns/op` at leaf 1,024 between **2,540 and 28,045** — a factor of 11. The percentiles in section 4 are interleaved against the baseline so the ratio survives that; the absolute figures do not, and none is quoted as a cost.
 * **Two leaf sizes were swept for bytes and six for time**, because the byte curve is monotone enough that four points settle it and the time curve is not.
 * **The engine-level petabyte test does not run here.** `TestPetabyteScattered` reads `/proc/self/status` for RSS (`sparse_test.go:371`) and skips on darwin. The engine's petabyte behaviour is unchanged and unmeasured by this submission.
@@ -106,7 +106,7 @@ Two numbers decide this and they point in opposite directions. **The payload is 
 Two findings point in opposite directions and neither cancels the other:
 
 * **The encoding is ready.** `(gap, length)` costs 0.26x-0.44x of the current per-extent bytes and needs no format change.
-* **The lookup loses.** From 32 extents per leaf up, the p99 ratio is over 1.20x in all four runs (thinly at 32, decisively above it); at 8-16, where the threshold is undecided, the byte win falls to 0.61x. A two-level index with an in-leaf scan is the wrong shape for 100,000 contiguous runs, where binary search over a contiguous array is what the hardware is built for.
+* **The lookup loses.** From 64 extents per leaf up, the p99 ratio is over 1.20x in all four runs; at 32 extents per leaf it is 1.13-1.41 (three runs of four); at 8-16, where the threshold is undecided, the byte win falls to 0.61x. A two-level index with an in-leaf scan is the wrong shape for 100,000 contiguous runs, where binary search over a contiguous array is what the hardware is built for.
 
 What follows from that, in the order I would do it:
 
@@ -127,15 +127,17 @@ Repeated runs of the same binary, kept side by side, say what each half is worth
 * **Absolute time is not a measurement on this box.** Same binary, same seeds: the mean `ns/op` at leaf 1,024 ran between **1,733 and 14,004**, and from 64 extents per leaf up a single runaway run moved the mean by **6x-13x**. The **interleaved ratios** are what survive that, and only because both arms are sampled inside the same iteration; `score_table.md` §4b keeps the mean-based sweep as the counterexample.
 
 ```sh
-go run ./tools/rask-bench -out docs/research/hip-1344-rask/raw_results.json   # every table + raw JSON, ~3 min
+go run ./tools/rask-bench -shapes clustered,uniform \
+    -out docs/research/hip-1344-rask/raw_results.json   # every table + raw JSON, ~5 min
 go run ./tools/rask-bench -no-timing                                          # the deterministic half only, ~20 s
 go test -run TestMeasure -v ./internal/index/rask/                            # the byte table as a test
 go test -race -count=1 ./internal/index/rask/                                 # correctness under -race
 ```
 
-The percentile sweep takes `-samples` (default 20,000 per arm) and the mean sweep
-takes `-reps`; the report is meant to be run three or four times and read as a
-band, because that is what this host can support.
+The percentile sweep takes `-samples` (default 20,000 per arm) and `-shapes`
+(default `clustered`); the mean sweep takes `-reps`. The report is meant to be run
+three or four times and read as a band, because that is what this host can
+support — a single run of any absolute time figure here is not evidence.
 
 | File | What it is |
 |---|---|

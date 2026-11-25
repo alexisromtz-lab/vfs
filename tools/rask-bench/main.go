@@ -26,6 +26,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +74,7 @@ type leafrow struct {
 // measurement as a mean over a loop: the host's noise lands in both arms of each
 // pair, so the ratio survives conditions that make an absolute ns/op worthless.
 type pctrow struct {
+	Shape       string  `json:"shape"`
 	MaxLeaf     int     `json:"max_leaf"`
 	Leaves      int     `json:"leaves"`
 	Samples     int     `json:"samples"`
@@ -112,6 +114,7 @@ func main() {
 	reps := flag.Int("reps", 3, "timing repetitions; the minimum is reported")
 	noTiming := flag.Bool("no-timing", false, "skip the timing sweeps (deterministic only)")
 	samples := flag.Int("samples", 20000, "single-call samples per arm in the percentile sweep")
+	shapes := flag.String("shapes", "clustered", "comma-separated extent shapes for the percentile sweep")
 	flag.Parse()
 
 	rep := report{
@@ -198,12 +201,15 @@ func main() {
 	// ratio of like percentiles: the host's noise is common to both arms of a
 	// pair and cancels in the ratio, which is what H2 asks about.
 	if !*noTiming {
-		es := rask.Extents(100000, "clustered", rand.New(rand.NewPCG(100000, 42)))
-		q := rask.Probes(es, 4096, rand.New(rand.NewPCG(100000, 43)))
-		sl := rask.BuildSlice(es)
-		for _, maxLeaf := range []int{16, 32, 64, 128, 256, 1024} {
-			x := rask.BuildIndex(es, maxLeaf)
-			rep.Percentiles = append(rep.Percentiles, sampleLookups(sl, x, q, *samples, maxLeaf))
+		for _, shape := range strings.Split(*shapes, ",") {
+			shape = strings.TrimSpace(shape)
+			es := rask.Extents(100000, shape, rand.New(rand.NewPCG(100000, 42)))
+			q := rask.Probes(es, 4096, rand.New(rand.NewPCG(100000, 43)))
+			sl := rask.BuildSlice(es)
+			for _, maxLeaf := range []int{16, 32, 64, 128, 256, 1024} {
+				x := rask.BuildIndex(es, maxLeaf)
+				rep.Percentiles = append(rep.Percentiles, sampleLookups(shape, sl, x, q, *samples, maxLeaf))
+			}
 		}
 	}
 
@@ -233,7 +239,7 @@ func main() {
 // sampleLookups times one lookup per structure per step and returns the
 // percentiles of both arms. The order alternates, so neither structure is
 // systematically the one that pays for a scheduler tick.
-func sampleLookups(sl *rask.Slice, x *rask.Index, q []uint64, n, maxLeaf int) pctrow {
+func sampleLookups(shape string, sl *rask.Slice, x *rask.Index, q []uint64, n, maxLeaf int) pctrow {
 	sSlice := make([]float64, 0, n)
 	sRask := make([]float64, 0, n)
 	overhead := clockOverhead()
@@ -253,7 +259,7 @@ func sampleLookups(sl *rask.Slice, x *rask.Index, q []uint64, n, maxLeaf int) pc
 	}
 
 	row := pctrow{
-		MaxLeaf: maxLeaf, Leaves: x.Leaves(), Samples: n, OverheadNs: overhead,
+		Shape: shape, MaxLeaf: maxLeaf, Leaves: x.Leaves(), Samples: n, OverheadNs: overhead,
 		SliceP50: percentile(sSlice, 50), SliceP90: percentile(sSlice, 90), SliceP99: percentile(sSlice, 99),
 		RaskP50: percentile(sRask, 50), RaskP90: percentile(sRask, 90), RaskP99: percentile(sRask, 99),
 	}
@@ -355,12 +361,12 @@ func printTable(rep *report, reps int) {
 		}
 	}
 	if len(rep.Percentiles) > 0 {
-		fmt.Printf("\nLookup percentiles, interleaved (100,000 clustered extents, one call per sample):\n")
-		fmt.Printf("| max leaf | leaves | slice p50 | slice p90 | slice p99 | rask p50 | rask p90 | rask p99 | p50 ratio | p99 ratio | p99 net |\n")
-		fmt.Printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+		fmt.Printf("\nLookup percentiles, interleaved (100,000 extents, one call per sample):\n")
+		fmt.Printf("| shape | max leaf | leaves | slice p50 | slice p90 | slice p99 | rask p50 | rask p90 | rask p99 | p50 ratio | p99 ratio | p99 net |\n")
+		fmt.Printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 		for _, r := range rep.Percentiles {
-			fmt.Printf("| %d | %d | %.0f | %.0f | %.0f | %.0f | %.0f | %.0f | **%.2f** | **%.2f** | **%.2f** |\n",
-				r.MaxLeaf, r.Leaves, r.SliceP50, r.SliceP90, r.SliceP99, r.RaskP50, r.RaskP90, r.RaskP99,
+			fmt.Printf("| %s | %d | %d | %.0f | %.0f | %.0f | %.0f | %.0f | %.0f | **%.2f** | **%.2f** | **%.2f** |\n",
+				r.Shape, r.MaxLeaf, r.Leaves, r.SliceP50, r.SliceP90, r.SliceP99, r.RaskP50, r.RaskP90, r.RaskP99,
 				r.RatioP50, r.RatioP99, r.RatioP99Net)
 		}
 		fmt.Printf("  clock overhead %.0f ns per sample, present in both arms\n", rep.Percentiles[0].OverheadNs)

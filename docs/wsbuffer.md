@@ -91,9 +91,13 @@ Reproduce with
 | 8 | through | 2,175 / 2,173 | 1.054 / 1.053 | — | — |
 | 8 | window | 2,130 / 2,130 | 1.032 / 1.032 | 2,175 / 2,173 | **2.1%** |
 | 32 | through | 2,137 / 2,117 | 1.036 / 1.026 | — | — |
-| 32 | window | 2,092 / 2,090 | 1.014 / 1.013 | 2,137 / 2,117 | **1.9%** |
+| 32 | window | 2,092 / 2,090 | 1.014 / 1.013 | 2,137 / 2,117 | **2.1% / 1.3%** |
 | 8 (256 KiB window) | through | 2,181 / 2,190 | 1.057 / 1.062 | — | — |
 | 8 (256 KiB window) | window | 2,128 / 2,128 | 1.031 / 1.031 | 2,181 / 2,190 | **2.4%–2.8%** |
+
+The `every=32` row is the one where the two repetitions disagree most (2,092 against 2,137
+in the first, 2,090 against 2,117 in the second): it is published as a pair rather than
+collapsed, because a single figure there would hide a factor of 1.6 between the runs.
 
 The window's own counterfactual is larger than `main`'s at `every=1` (2,888 pages asked for
 against 2,594): the layer changes the timing of the writer, so the journal's group commit forms

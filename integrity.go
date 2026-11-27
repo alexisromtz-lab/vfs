@@ -43,6 +43,11 @@ func (v *Volume) Verify(ctx context.Context, opts VerifyOptions) (*VerifyReport,
 
 	var walk func(rf ref) error
 	walk = func(rf ref) error {
+		// The caller's deadline is above every read: a walk that ignores it keeps asking the
+		// store for shards the caller no longer wants.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if rf == none || seen[rf] {
 			return nil
 		}
@@ -97,7 +102,15 @@ func (v *Volume) Verify(ctx context.Context, opts VerifyOptions) (*VerifyReport,
 		return nil
 	}
 	if err := walk(v.root); err != nil {
-		return r, r.Err()
+		// A Fault is a verdict on the bytes and belongs in the report. Anything else -- a
+		// store that failed, a cancelled caller -- is no verdict: r.Err() is nil without a
+		// Fault, so answering it here would report an intact Head over a store that was
+		// never read.
+		var f Fault
+		if errors.As(err, &f) {
+			return r, r.Err()
+		}
+		return r, err
 	}
 
 	// One read per pack, whatever its length: a pack is what the writer made one object of,
@@ -124,6 +137,10 @@ func (v *Volume) Verify(ctx context.Context, opts VerifyOptions) (*VerifyReport,
 		gone     = map[packID]bool{} // a missing pack is one fault, however many chunks it held
 	)
 	for _, j := range jobs {
+		// A pack is the unit that resides: stopping here bounds the read, not the walk.
+		if err := ctx.Err(); err != nil {
+			return r, err
+		}
 		if !loaded || cur != j.w.pack {
 			cur, loaded = j.w.pack, false
 			if !packSeen[cur] {

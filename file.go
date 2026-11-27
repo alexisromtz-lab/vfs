@@ -328,6 +328,10 @@ func join(rs []run) []run {
 // fetch fills p with the bytes of pieces, reading the chunks (from the cache, or the
 // store) at the tree whose root is given. No lock is held.
 func (v *Volume) fetch(ctx context.Context, root ref, pieces []piece, p []byte) error {
+	if len(pieces) > 0 {
+		v.acquireRoot(root)
+		defer v.releaseRoot(root)
+	}
 	for _, pc := range pieces {
 		plain, err := v.getChunk(ctx, root, pc.id)
 		if err != nil {

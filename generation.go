@@ -61,6 +61,7 @@ type snap struct {
 	mtime  time.Time
 	ctime  time.Time
 	fz     *layer
+	class  int
 
 	muts      []mut    // the records that make the file what it is now
 	outInline []byte   // the settled content once the generation is published
@@ -211,6 +212,7 @@ func (g *generation) settleFile(ctx context.Context, s *snap, pk *packer) error 
 	if err != nil {
 		return err
 	}
+	s.class = v.classifySnap(ctx, g, s)
 	b := body{inline: s.inline, ext: s.ext, size: s.size, layers: []*layer{s.fz}}
 	var inline []byte
 	var out []extent
@@ -410,7 +412,8 @@ func (g *generation) recut(ctx context.Context, s *snap, b *body, pk *packer) ([
 			}
 			e := &extent{off: pos, n: uint32(len(piece))}
 			out = append(out, e)
-			jobs.do(func(ctx context.Context) error { return g.putChunk(ctx, e, piece, pk) })
+			cls := s.class
+			jobs.do(func(ctx context.Context) error { return g.putChunkClassified(ctx, e, piece, pk, cls) })
 			pos += uint64(len(piece))
 		}
 	}
@@ -427,6 +430,10 @@ func (g *generation) recut(ctx context.Context, s *snap, b *body, pk *packer) ([
 // putChunk names a chunk, and seals it into a pack unless the Volume has it already: that
 // is dedupe. The record of where it lies is staged for the tree.
 func (g *generation) putChunk(ctx context.Context, e *extent, piece []byte, pk *packer) error {
+	return g.putChunkClassified(ctx, e, piece, pk, 0)
+}
+
+func (g *generation) putChunkClassified(ctx context.Context, e *extent, piece []byte, pk *packer, class int) error {
 	v := g.v
 	id := sumChunk(piece)
 	e.id = id
@@ -438,7 +445,7 @@ func (g *generation) putChunk(ctx context.Context, e *extent, piece []byte, pk *
 	if err != nil {
 		return err
 	}
-	w, err := pk.add(frame)
+	w, err := pk.addClassified(class, frame)
 	if err != nil {
 		return err
 	}

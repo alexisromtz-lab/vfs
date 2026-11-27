@@ -79,7 +79,7 @@ func (v *Volume) cut() *generation {
 	g := &generation{v: v, seq: v.applied, over: v.over, gone: v.gone, next: v.next, root: v.root, ns: v.ns}
 	v.over, v.gone, v.goneSet, v.logged = newOverlay(), nil, map[InodeID]struct{}{}, 0
 	for _, f := range v.dirtyFiles {
-		fz := &layer{dirty: f.lv.dirty, dirtyN: f.lv.dirtyN, limit: f.lv.limit, void: f.lv.void}
+		fz := &layer{dirty: f.lv.dirty, dirtyN: f.lv.dirtyN, limit: f.lv.limit, void: f.lv.void, voidRask: f.lv.voidRask.Clone()}
 		g.snaps = append(g.snaps, &snap{f: f, ino: f.ino, inline: f.inline, ext: f.ext, size: f.size, mtime: f.mtime, ctime: f.ctime, fz: fz})
 		g.bytes += fz.dirtyN
 		f.fz = fz
@@ -289,6 +289,18 @@ func (s *snap) runs() []run {
 	}
 	// settled adds a stretch of the settled content: what was punched out is not in it.
 	settled := func(a, b uint64) {
+		if s.fz.voidRask != nil {
+			s.fz.voidRask.RangeOverlaps(a, b, func(r run) {
+				if r.a > a {
+					add(a, r.a)
+				}
+				a = max(a, r.b)
+			})
+			if a < b {
+				add(a, b)
+			}
+			return
+		}
 		for _, r := range s.fz.void {
 			if r.b <= a {
 				continue
@@ -329,6 +341,9 @@ func (s *snap) touched(a, b uint64) bool {
 
 // voided reports whether a punched range overlaps [a, b).
 func (s *snap) voided(a, b uint64) bool {
+	if s.fz.voidRask != nil {
+		return s.fz.voidRask.Overlaps(a, b)
+	}
 	v := s.fz.void
 	i := sort.Search(len(v), func(i int) bool { return v[i].b > a })
 	return i < len(v) && v[i].a < b

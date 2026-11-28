@@ -110,24 +110,25 @@ pages *`main`* wrote.
 The regime the layer is for is the one where a sync round carries many batches. In
 `TestScrapJournalHoldsTheSameVolume` (`wsbuffer_journal_test.go`) a Volume writes seven files,
 the journal puts 13 to 38 calls into one round, and a second Volume replays them through the
-layer. Five repetitions of that test (`-count=5`), in the order they ran:
+layer. Five repetitions of that test (`-count=5`) on a machine at load ~50, in the order they ran:
 
-| run | through: journal asks, pages it gets | window: journal asks | window: pages the files get |
+| run | through: calls, pages, ratio | window: journal asked | window: 2 calls on the media |
 |---|---|---|---|
-| 1 | 20 calls, ratio 1.230 | 20 calls, 104 pages | 2 calls, **86 pages, ratio 1.017** |
-| 2 | 14 calls, ratio 1.159 | 8 calls, 92 pages | 2 calls, **86, 1.017** |
-| 3 | 18 calls, ratio 1.206 | 11 calls, 95 pages | 2 calls, **86, 1.017** |
-| 4 | 38 calls, ratio 1.442 | 8 calls, 92 pages | 2 calls, **86, 1.017** |
-| 5 | 13 calls, ratio 1.147 | 9 calls, 93 pages | 2 calls, **86, 1.017** |
+| 1 | 39 calls, 123 pages, 1.454 | 17 calls, 101 pages | **86 pages, ratio 1.017** |
+| 2 | 8 calls, 92 pages, 1.088 | 8 calls, 92 pages | **86, 1.017** |
+| 3 | 18 calls, 102 pages, 1.206 | 25 calls, 109 pages | **86, 1.017** |
+| 4 | 51 calls, 135 pages, 1.596 | 28 calls, 112 pages | **86, 1.017** |
+| 5 | 38 calls, 122 pages, 1.442 | 11 calls, 95 pages | **86, 1.017** |
 
-(through: 104, 98, 102, 122 and 97 pages.) All ten runs wrote 346,467 B: the stream is the same,
-byte for byte, and both modes replay the same 119 changes. What moves is the baseline — the
-journal's batching depends on scheduling, so the pages it asks for range over 97 to 122 — and what
-the layer does not move is the result: 86 pages in five of five, 1.017 every time, and 2 calls on
-the media instead of 8 to 38. The workload's own bytes are 7 × 48,152 B, which is 84 pages if every
-file is written contiguously; the layer ends two pages off that floor where the straight path ends
-13 to 38 off it. The reduction is less a percentage of a fixed baseline than the removal of the
-baseline's variance, which is what makes it a property of the layer and not of the afternoon.
+All ten runs wrote 346,467 B: the stream is the same, byte for byte, and both modes replay the
+same 119 changes. What moves is the baseline — the journal's batching depends on scheduling, so
+its own page count ranged over 92 to 135 in this set and over 97 to 122 in an earlier one — and
+what the layer does not move is the result: 86 pages in five of five, 1.017 every time, and 2
+calls on the media instead of 8 to 51. The workload's own bytes are 7 × 48,152 B, which is 84
+pages if every file is written contiguously; the layer ends two pages off that floor where the
+straight path ends 8 to 51 off it. The reduction is less a percentage of a fixed baseline than
+the removal of the baseline's variance, and the spread between two sets of five is part of the
+same fact: a single run of this test is not a number.
 
 ### 4.3 CPU and latency
 

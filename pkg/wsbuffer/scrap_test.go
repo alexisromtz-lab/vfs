@@ -379,6 +379,8 @@ func TestScrapHoldsAtMostTwoWindows(t *testing.T) {
 			if d.Stats().Bytes != uint64(m.seen) {
 				t.Errorf("the layer says it wrote %d bytes, the media saw %d", d.Stats().Bytes, m.seen)
 			}
+			t.Logf("peak held %d bytes over a %d-byte window; %d bytes written, %d on the media, %d still resident",
+				peak, tc.run, accepted, m.seen, accepted-int64(m.seen))
 		})
 	}
 }

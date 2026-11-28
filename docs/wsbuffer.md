@@ -149,6 +149,37 @@ throughput is mixed (14,338 / 14,431 against 16,265 / 12,155 records/s): at that
 a round no longer waits behind a chain of small writes, and what is left is noise from a shared
 machine.
 
+### 4.4 The same workload through the other layer
+
+#93 ships a layer at the same place in the stack — a `journal.Disk` — so the workload of §4.2 can
+be driven through both. Two passthrough counters bracket each configuration (one directly under
+the journal, one directly over the media), so "what the journal asked" and "what the files would
+get" are counted the same way whatever sits between; the unwrapped row is the control and its two
+counters agree. Five repetitions each, media side:
+
+| configuration | calls on the media | pages | ratio | 5 of 5? |
+|---|---|---|---|---|
+| through | 6, 6, 16, 13, 7 | 90, 90, 100, 97, 91 | 1.064–1.182 | no |
+| #93 as shipped (16 KiB capacity) | 7, 21, 19, 16, 6 | 91, 95, 94, 94, 90 | 1.064–1.123 | no |
+| #93, capacity 1 MiB | 2 × 5 | 86 × 5 | 1.017 | yes |
+| #93, capacity 1 MiB, `AlwaysCopy` | 2 × 5 | 86 × 5 | 1.017 | yes |
+| this layer, 1 MiB window | 2 × 5 | 86 × 5 | 1.017 | yes |
+
+All 25 runs wrote 346,467 B, replayed 119 changes into 7 paths and ended on the same snapshot. At
+equal capacity the two layers are indistinguishable: the 1.017 is a property of holding a window
+and emitting aligned runs, not of either codebase, and two independent implementations reaching
+it is the strongest evidence the study has that the mechanism is real. The bypass path makes no
+difference here because the writes are unaligned at both ends by construction, so nothing
+qualifies for it.
+
+At its shipped default of 16 KiB the other layer does not move this workload — 90 to 95 pages
+against a baseline of 90 to 100, inside the baseline's own spread — which follows from the batch
+geometry: 512 to 5,108 B at offsets nobody chose cannot be aligned by a buffer that small. This
+row is the reason the window's size is part of the claim and not a tuning detail.
+
+#117 is not measurable this way: its tree is a self-contained WAL rather than a `journal.Disk`, so
+this workload cannot drive it without adopting its write path. No number is claimed for it.
+
 ## 5. Evidence and safety
 
 - **Byte identity**: the counters prove it per row. `Stats.Bytes == Stats.RefBytes` in all 16 rows
@@ -242,6 +273,8 @@ machine.
     go test -count=1 -count=5 -run TestScrapJournalHoldsTheSameVolume -v .   # the five runs
     go test -count=1 -run TestScrapJournalSurvivesACrash -v .   # a killed process, replayed
     go test -count=1 -run TestScrapHoldsAtMostTwoWindows -v ./pkg/wsbuffer/   # the memory bound
+    # §4.4 is a measurement tree, not this branch: check out #93, copy pkg/wsbuffer/scrap.go
+    # into it, and run the harness posted on the pull request.
     go run ./tools/wsbufferbench -dir /var/tmp/wsbuffer -writers 8 -ops 256 -every 1 -rep 2 -header
 
 `docs/wsbuffer.csv` is four such invocations (`-every 1`, `-every 8`, `-every 32`, and `-every 8

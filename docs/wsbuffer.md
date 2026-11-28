@@ -109,14 +109,25 @@ pages *`main`* wrote.
 
 The regime the layer is for is the one where a sync round carries many batches. In
 `TestScrapJournalHoldsTheSameVolume` (`wsbuffer_journal_test.go`) a Volume writes seven files,
-seventy journal calls land in one round, and a second Volume replays them through the layer:
+the journal puts 13 to 38 calls into one round, and a second Volume replays them through the
+layer. Five repetitions of that test (`-count=5`), in the order they ran:
 
-| | journal asks the files for | the files get |
-|---|---|---|
-| through | 69 calls, 346,467 B, 153 pages, ratio 1.809 | the same |
-| window (1 MiB) | 70 calls, 346,467 B, 154 pages, ratio 1.821 | 2 calls, 346,467 B, **86 pages, ratio 1.017** |
+| run | through: journal asks, pages it gets | window: journal asks | window: pages the files get |
+|---|---|---|---|
+| 1 | 20 calls, ratio 1.230 | 20 calls, 104 pages | 2 calls, **86 pages, ratio 1.017** |
+| 2 | 14 calls, ratio 1.159 | 8 calls, 92 pages | 2 calls, **86, 1.017** |
+| 3 | 18 calls, ratio 1.206 | 11 calls, 95 pages | 2 calls, **86, 1.017** |
+| 4 | 38 calls, ratio 1.442 | 8 calls, 92 pages | 2 calls, **86, 1.017** |
+| 5 | 13 calls, ratio 1.147 | 9 calls, 93 pages | 2 calls, **86, 1.017** |
 
-44% fewer pages, byte for byte the same stream, and both modes replay the same 119 changes.
+(through: 104, 98, 102, 122 and 97 pages.) All ten runs wrote 346,467 B: the stream is the same,
+byte for byte, and both modes replay the same 119 changes. What moves is the baseline — the
+journal's batching depends on scheduling, so the pages it asks for range over 97 to 122 — and what
+the layer does not move is the result: 86 pages in five of five, 1.017 every time, and 2 calls on
+the media instead of 8 to 38. The workload's own bytes are 7 × 48,152 B, which is 84 pages if every
+file is written contiguously; the layer ends two pages off that floor where the straight path ends
+13 to 38 off it. The reduction is less a percentage of a fixed baseline than the removal of the
+baseline's variance, which is what makes it a property of the layer and not of the afternoon.
 
 ### 4.3 CPU and latency
 
@@ -155,6 +166,20 @@ machine.
 - **Durability**: `Sync` flushes the window before it returns, so a record the journal calls
   durable is on the file. `Close` does the same, and `Disk.Close` flushes every file it handed
   out, including one the journal left open.
+- **A crash after a sync loses nothing**: `TestScrapJournalSurvivesACrash` writes the workload
+  through the layer in a second process, syncs it, and lets that process be killed with `SIGKILL`
+  before any `Close`; this process then attaches to the journal the dead one left, over the same
+  store, and replays **119 of 119 changes into 7 paths**, ending on the snapshot a run that
+  publishes and closes normally produces. The receipt is falsifiable in one edit: remove the flush
+  from the layer's `Sync` and the same test recovers nothing.
+- **Bounded memory, measured from outside**: `TestScrapHoldsAtMostTwoWindows` puts a `journal.Disk`
+  under the layer that swallows every write and records only what reached it, so what the journal
+  handed over minus what the media saw is what the layer is holding. The bound is **two windows per
+  `File`**, not one: a write of exactly `Run` bytes is captured rather than sent through, and the
+  write that continues it is added before the flush is decided. On a 64-byte window the witness
+  sequence attains 128 B (2·Run) and the no-window control peaks at the largest single write, so
+  the measurement separates buffering from not buffering. At the default 1 MiB window that is at
+  most 2 MiB transiently per open segment, and at most one window on return from a write.
 - **Multi-tenant isolation**: the layer holds no state across segments or Volumes — one `Disk` per
   journal directory (`Config.Disk` is called per directory), one window per `File`, keyed by the
   offset the journal passes in.
@@ -186,7 +211,12 @@ machine.
    2.1% at 1 MiB, with the same p50): the window usually does not fill between two syncs at this
    rate, so the flush lands on the sync path whatever the window is.
 5. **Throughput against plain files is not measured here** (§2).
-6. **These are counts of pages, not of device writes.** The kernel, the filesystem and the SSD
+6. **A crash before the sync loses the window.** The window is memory: a process that dies with
+   bytes in it loses them as it loses any write it had not started, and a replay then finds the
+   journal up to the last sync. That is the contract the journal's own writeback hint already
+   has; the crash test measures only the side a node is allowed to rely on, which is that after
+   `Sync` returns the recovery is exact.
+7. **These are counts of pages, not of device writes.** The kernel, the filesystem and the SSD
    each coalesce and split on their own; what this instrument measures is what the journal asks
    the file layer for, which is the part this tree decides.
 
@@ -208,6 +238,9 @@ machine.
 
     go test -count=1 ./pkg/wsbuffer/                 # the layer, alone
     go test -count=1 -run TestScrapJournal -v .      # through a Volume, including replay
+    go test -count=1 -count=5 -run TestScrapJournalHoldsTheSameVolume -v .   # the five runs
+    go test -count=1 -run TestScrapJournalSurvivesACrash -v .   # a killed process, replayed
+    go test -count=1 -run TestScrapHoldsAtMostTwoWindows -v ./pkg/wsbuffer/   # the memory bound
     go run ./tools/wsbufferbench -dir /var/tmp/wsbuffer -writers 8 -ops 256 -every 1 -rep 2 -header
 
 `docs/wsbuffer.csv` is four such invocations (`-every 1`, `-every 8`, `-every 32`, and `-every 8

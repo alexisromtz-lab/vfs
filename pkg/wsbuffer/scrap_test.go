@@ -261,3 +261,124 @@ func TestPages(t *testing.T) {
 		}
 	}
 }
+
+// media is a journal.Disk that does nothing but record what the layer sends it: what it does not
+// see is what the layer is holding. The files it hands out swallow every write, so a test can
+// count the layer's memory from the outside, without reading a field.
+type media struct {
+	ev   []emit // one per write that reached the media, in order
+	seen int64  // bytes the media has been given
+}
+
+// emit is one write that reached the media. before is how many bytes it had been given already,
+// so accepted-before is everything the journal had handed the layer at that instant.
+type emit struct {
+	before int64
+	n      int64
+}
+
+func (m *media) List() ([]string, error)                    { return nil, nil }
+func (m *media) Remove(string) error                        { return nil }
+func (m *media) Close() error                               { return nil }
+func (m *media) Create(string, int64) (journal.File, error) { return &mediaFile{m: m}, nil }
+func (m *media) Open(string) (journal.File, error)          { return &mediaFile{m: m}, nil }
+
+type mediaFile struct{ m *media }
+
+func (f *mediaFile) ReadAt(p []byte, off int64) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func (f *mediaFile) WriteAt(p []byte, off int64) (int, error) {
+	f.m.ev = append(f.m.ev, emit{before: f.m.seen, n: int64(len(p))})
+	f.m.seen += int64(len(p))
+	return len(p), nil
+}
+
+func (f *mediaFile) Writeback(int64, int64) error { return nil }
+func (f *mediaFile) Sync() error                  { return nil }
+func (f *mediaFile) Size() int64                  { return 0 }
+func (f *mediaFile) Close() error                 { return nil }
+
+// TestScrapHoldsAtMostTwoWindows measures, from outside the layer, how many bytes it can be
+// holding at one instant. Every byte the journal hands over either reached the media or is still
+// in the layer, so accepted minus the media's own count is what the layer is holding; at the
+// instant a write reaches the media, everything accepted so far is still on the layer's side.
+//
+// The bound is two windows, not one: a window may fill to exactly Run without flushing (a write
+// of exactly Run bytes is captured, not sent through), and the write that continues it is added
+// before the flush is decided, so the layer can hold Run in the window and Run in flight. The
+// witness sequence attains 2*Run, which is what makes the bound the measured value rather than a
+// statement looser than the code.
+func TestScrapHoldsAtMostTwoWindows(t *testing.T) {
+	type step struct {
+		n   int
+		off int64
+	}
+	for _, tc := range []struct {
+		name     string
+		run      int
+		seq      []step
+		wantPeak int64
+	}{
+		{
+			// One byte short of a window, then a full window continuing it: the flush carries
+			// 2*run-1. Then a window of exactly run, continued: the flush carries 2*run.
+			name:     "a window and the write that ends it",
+			run:      64,
+			seq:      []step{{63, 0}, {64, 63}, {64, 127}, {64, 191}},
+			wantPeak: 128,
+		},
+		{
+			// The baseline half of the measurement: no window, so nothing accumulates and the
+			// only bytes the media has not seen are the ones in the call that is emitting.
+			name:     "no window",
+			run:      -1,
+			seq:      []step{{63, 0}, {64, 63}, {64, 127}, {64, 191}},
+			wantPeak: 64,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &media{}
+			d := New(m, Options{Run: tc.run})
+			f, err := d.Create("000000.seg", 1<<20)
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			var accepted, peak int64
+			seen := 0
+			for _, s := range tc.seq {
+				if _, err := f.WriteAt(make([]byte, s.n), s.off); err != nil {
+					t.Fatalf("write %d at %d: %v", s.n, s.off, err)
+				}
+				accepted += int64(s.n)
+				for _, e := range m.ev[seen:] {
+					if held := accepted - e.before; held > peak {
+						peak = held
+					}
+				}
+				seen = len(m.ev)
+				held := accepted - m.seen
+				if tc.run > 0 && held > int64(tc.run) {
+					t.Errorf("after writing %d at %d the layer holds %d bytes, over the %d-byte window",
+						s.n, s.off, held, tc.run)
+				}
+				if tc.run <= 0 && held != 0 {
+					t.Errorf("with no window the layer holds %d bytes after a write of %d", held, s.n)
+				}
+			}
+			if peak != tc.wantPeak {
+				t.Errorf("the layer held at most %d bytes, want %d", peak, tc.wantPeak)
+			}
+			if tc.run > 0 && peak > int64(2*tc.run) {
+				t.Errorf("the layer held %d bytes, over the two windows (%d) that bound it", peak, 2*tc.run)
+			}
+			if d.Stats().Bytes != uint64(m.seen) {
+				t.Errorf("the layer says it wrote %d bytes, the media saw %d", d.Stats().Bytes, m.seen)
+			}
+		})
+	}
+}

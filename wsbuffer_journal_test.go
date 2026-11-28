@@ -1,15 +1,24 @@
 package vfs_test
 
 import (
+	"bufio"
+	"flag"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/hanzoai/vfs"
 	"github.com/hanzoai/vfs/internal/storetest"
 	"github.com/hanzoai/vfs/journal"
+	"github.com/hanzoai/vfs/pkg/backend"
+	_ "github.com/hanzoai/vfs/pkg/backend/file"
 	"github.com/hanzoai/vfs/pkg/wsbuffer"
+	"github.com/luxfi/age"
 )
 
 // layers collects the Disks a Config.Disk hands out: a Volume opens one per journal directory
@@ -219,4 +228,177 @@ func TestScrapJournalAfterACleanClose(t *testing.T) {
 		t.Errorf("replayed %d changes of a journal that ended with everything published", r.Replayed)
 	}
 	sameSnapshot(t, "after a clean close", snapshot(t, w), want)
+}
+
+// synced is disk without storetest's unsynced wrapper: the layer's Sync reaches the media here,
+// which is what a crash receipt needs. It is the same layer, over the operating system's files.
+func (l *layers) synced(run int) func(string) (journal.Disk, error) {
+	return func(dir string) (journal.Disk, error) {
+		d, err := journal.Files(dir)
+		if err != nil {
+			return nil, err
+		}
+		w := wsbuffer.New(d, wsbuffer.Options{Run: run})
+		l.mu.Lock()
+		l.ds = append(l.ds, w)
+		l.mu.Unlock()
+		return w, nil
+	}
+}
+
+// TestScrapCrashChild is the process that dies: it writes the workload through the layer, syncs it
+// into its journal, says READY and waits for the parent's SIGKILL. Nothing closes the Volume, so
+// what the parent finds is what a node leaves behind when its process is taken away.
+func TestScrapCrashChild(t *testing.T) {
+	if flag.Arg(0) != "scrapcrash" {
+		t.Skip("runs only as the child of TestScrapJournalSurvivesACrash")
+	}
+	journalDir, storeDir := flag.Arg(1), flag.Arg(2)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := age.ParseHybridIdentity(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	be, err := backend.Open(ctx, "file://"+storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := vfs.Hybrid(key)
+	l := &layers{}
+	mk := func(round uint64) vfs.Config {
+		return vfs.Config{
+			Backend: be, Cipher: c, Round: round,
+			Journal: journalDir, JournalCapacity: 64 << 20,
+			Disk: l.synced(wsbuffer.DefaultRun), Bound: time.Hour,
+		}
+	}
+	if err := vfs.Create(ctx, mk(0)); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vfs.Attach(ctx, mk(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrapWorkload(t, v)
+	// After Sync returns the workload is in this node's journal on this node's files, and the
+	// store has none of it: that is the state a node that dies after a sync leaves.
+	if err := v.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("READY")
+	select {} // the parent kills this process
+}
+
+// TestScrapJournalSurvivesACrash is the crash receipt: the workload goes through the layer in a
+// process that is killed after its sync and before any close, and a second process recovers it from
+// the journal the dead one left, over the same store. The recovered tree must be the tree a run
+// that publishes and closes normally produces.
+//
+// What it does not cover: a crash before the sync. The layer's window is memory, so a process that
+// dies with bytes in it loses them as it loses any write it had not started; Sync is the call that
+// ends the window and the receipt is that it ends it.
+func TestScrapJournalSurvivesACrash(t *testing.T) {
+	key := newKey(t)
+	c := vfs.Hybrid(key)
+	journalDir, storeDir := t.TempDir(), t.TempDir()
+	be, err := backend.Open(ctx, "file://"+storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgOf := func(be backend.Backend, c vfs.Cipher, jdir string, round uint64) vfs.Config {
+		return vfs.Config{
+			Backend: be, Cipher: c, Round: round,
+			Journal: jdir, JournalCapacity: 64 << 20,
+			Disk: (&layers{}).synced(wsbuffer.DefaultRun), Bound: time.Hour,
+		}
+	}
+	// The store is created by the child: opening a file backend creates nothing, so this process
+	// can hold it open across the child's life without being the one that made anything.
+	cmd := exec.Command(os.Args[0], "-test.run=^TestScrapCrashChild$", "-test.count=1",
+		"scrapcrash", journalDir, storeDir)
+	cmd.Stdin = strings.NewReader(key.String() + "\n")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ready := make(chan bool, 1)
+	go func() {
+		sc := bufio.NewScanner(out)
+		for sc.Scan() {
+			if sc.Text() == "READY" {
+				ready <- true
+				return
+			}
+		}
+		ready <- false
+	}()
+	select {
+	case ok := <-ready:
+		if !ok {
+			_ = cmd.Wait()
+			t.Fatal("the child exited before it synced the workload")
+		}
+	case <-time.After(2 * time.Minute):
+		_ = cmd.Process.Kill()
+		t.Fatal("the child never reached the sync")
+	}
+	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+
+	// The survivor: the same store, the journal the dead process left, a later round.
+	l := &layers{}
+	next, err := vfs.Attach(ctx, vfs.Config{
+		Backend: be, Cipher: c, Round: 2,
+		Journal: journalDir, JournalCapacity: 64 << 20,
+		Disk: l.synced(wsbuffer.DefaultRun), Bound: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("attach to the journal the dead process left: %v", err)
+	}
+	defer next.Close()
+	r := next.Recovery()
+	if r.Replayed == 0 {
+		t.Fatal("replayed nothing: the workload never reached the journal's files")
+	}
+	got := snapshot(t, next)
+	t.Logf("the killed process left %d changes in its journal and this one replayed all of them, into %d paths",
+		r.Replayed, len(got))
+
+	// The reference: the same workload on a Volume that publishes and closes as usual. The key
+	// differs, and cannot matter: the snapshot hashes the plaintext a Volume reads back.
+	refBe, err := backend.Open(ctx, "file://"+t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	refC, refDir := vfsAge(t), t.TempDir()
+	if err := vfs.Create(ctx, cfgOf(refBe, refC, refDir, 0)); err != nil {
+		t.Fatalf("reference: create: %v", err)
+	}
+	v, err := vfs.Attach(ctx, cfgOf(refBe, refC, refDir, 1))
+	if err != nil {
+		t.Fatalf("reference: attach: %v", err)
+	}
+	scrapWorkload(t, v)
+	flush(t, v)
+	if err := v.Close(); err != nil {
+		t.Fatalf("reference: close: %v", err)
+	}
+	ref, err := vfs.Attach(ctx, cfgOf(refBe, refC, refDir, 2))
+	if err != nil {
+		t.Fatalf("reference: attach to read: %v", err)
+	}
+	want := snapshot(t, ref)
+	if err := ref.Close(); err != nil {
+		t.Fatalf("reference: close reader: %v", err)
+	}
+	sameSnapshot(t, "after the kill", got, want)
 }
